@@ -1,0 +1,6 @@
+{
+    "subject" : "Kubernetes Node-Shifter Alerts",
+    "recipient" : "sunnygupta@shieldsquare.com",
+    "sender" : "mail@shieldsquare.com",
+    "secret" : "secret-password"
+}

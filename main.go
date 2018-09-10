@@ -4,6 +4,7 @@ import (
 	stdlog "log"
 	"net/http"
 	"os"
+	"fmt"
 	"os/signal"
 	"runtime"
 	"sync"
@@ -173,6 +174,9 @@ func main() {
 					Str("node-pool", *nodePoolFrom).
 					Msg("Error while getting the list of nodes")
 
+				// mailer.go
+				DispatchMail(*nodePoolFrom + "- Error while getting the list of nodes")
+
 				nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
 
 				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
@@ -187,6 +191,10 @@ func main() {
 					Err(err).
 					Str("node-pool", *nodePoolTo).
 					Msg("Error while getting the list of nodes")
+
+				// mailer.go
+				DispatchMail(*nodePoolTo + "- Error while getting the list of nodes")
+
 				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
 
 				nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
@@ -213,6 +221,8 @@ func main() {
 				status = "shifted"
 
 				waitGroup.Add(1)
+
+				// Add logic to incre/decr one dummy node pool if that throws error then Mail and in next iteration we can plan next step.
 				if err := shiftNode(gcloudContainerClient, *nodePoolFrom, *nodePoolTo, nodesFrom, nodesTo); err != nil {
 					status = "failed"
 				}
@@ -255,6 +265,10 @@ func shiftNode(g GCloudContainerClient, fromName, toName string, from, to *apiv1
 			Err(err).
 			Str("node-pool", toName).
 			Msg("Error resizing node pool")
+
+		// mailer.go
+		DispatchMail(fmt.Sprintf("FATAL %% node-pool:%s . ERROR resizing node pool. Possible PRE-EMPTIBLE resources not available.", toName) )
+
 		return
 	}
 
@@ -273,6 +287,12 @@ func shiftNode(g GCloudContainerClient, fromName, toName string, from, to *apiv1
 			Err(err).
 			Str("node-pool", fromName).
 			Msg("Error resizing node pool")
+
+		// mailer.go
+		DispatchMail(fmt.Sprintf("node-pool:%s . ERROR resizing node pool", fromName) )
+	}else{
+		// mailer.go
+		DispatchMail(fmt.Sprintf("## node-pool: %s *.* Removed 1 node from the pool, currently %d node(s), expecting %d node(s).  ##########################################################################  node-pool: %s *.* Added 1 node to the pool, currently %d node(s), expecting %d node(s)", fromName, fromCurrentSize, fromNewSize, toName, toCurrentSize, toNewSize) )
 	}
 
 	return
