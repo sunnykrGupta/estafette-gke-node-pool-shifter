@@ -3,6 +3,14 @@
 This controller shifts nodes from one node pool to another, in order to favour preemptibles over a 'safety net' node
 pool of regular vms.
 
+### Added feature :
+- Mail support whenever error occurs while scaling node-pool. Possible suspicion on pre-emptible not available.
+
+### Modify 
+- conf.json     // contains mail credentials to be used by mailer.go
+- template.html // template used for mail
+
+
 [![License](https://img.shields.io/github/license/estafette/estafette-gke-node-pool-shifter.svg)](https://github.com/estafette/estafette-gke-node-pool-shifter/blob/master/LICENSE)
 
 
@@ -19,6 +27,8 @@ You can either use environment variables or flags to configure the following set
 | NODE_POOL_FROM          | --node-pool-from          |          | Name of the node pool to shift from
 | NODE_POOL_FROM_MIN_NODE | --node-pool-from-min-node | 0        | Minimum amount of node to keep on the from node pool
 | NODE_POOL_TO            | --node-pool-to            |          | Name of the node pool to shift to
+| DUMMY-NODE-POOL         | --dummy-node-pool         |          | Name of the dummy node pool to shift (should be pre-emptible)
+| NO-ENV*                | --disable-dummy-shift     | false    | Default, it will shift dummy pool 0->1 and then decrease it back to 0 to validate pre-emptible health.
 
 *Before deploying*, you first need to create a service account via the GCloud dashboard with role set to _Compute
 Instance Admin_ and _Container Engine Admin_. This key is going to be used to authenticate from the application to
