@@ -54,7 +54,6 @@ func ReadHostname() (string) {
         fmt.Println(err)
         return "Unknown"
     } else {
-        fmt.Println(hostname)
         return hostname
     }
 
@@ -101,6 +100,7 @@ func DispatchMail(alertMsg string) {
 
 	config, err := ReadConfig()
 
+
     //create your file with desired read/write permissions
     f, e := os.OpenFile(logfile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
     defer f.Close()
@@ -108,6 +108,9 @@ func DispatchMail(alertMsg string) {
     if e != nil {
         log.Fatal(e)
     }
+
+    //https://golang.org/pkg/log/#pkg-constants
+    log.SetFlags(log.LstdFlags)
 
     //set output of logs to f
     log.SetOutput(f)

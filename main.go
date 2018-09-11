@@ -25,7 +25,7 @@ var (
 	// flags
 	interval = kingpin.Flag("interval", "Time in second to wait between each node pool check.").
 			Envar("INTERVAL").
-			Default("300").
+			Default("600").
 			Short('i').
 			Int()
 	kubeConfigPath = kingpin.Flag("kubeconfig", "Provide the path to the kube config path, usually located in ~/.kube/config. For out of cluster execution").
@@ -69,10 +69,25 @@ var (
 	goVersion = runtime.Version()
 )
 
+
+//** Var to support hack to detect PRE-EMPTIBLE failure, dummy-nodepool
+var (
+	nodePoolDummy = kingpin.Flag("dummy-node-pool", "The name of the dummy node pool to shift to.").
+			Required().
+			String()
+
+	// True to enable dummy shift, False set to fallback code to original mode
+	disableDummyShift  = kingpin.Flag("disable-dummy-shift", "Disable dummy shift mode.").
+					Bool()
+)
+//**
+
+
 func init() {
 	// Metrics have to be registered to be exposed:
 	prometheus.MustRegister(nodeTotals)
 }
+
 
 func main() {
 	kingpin.Parse()
@@ -99,6 +114,7 @@ func main() {
 		Str("goVersion", goVersion).
 		Str("nodePooldFrom", *nodePoolFrom).
 		Str("nodePooldTo", *nodePoolTo).
+		Str("dummyNodePool", *nodePoolDummy).
 		Msg("Starting estafette-gke-node-pool-shifter...")
 
 	kubernetes, err := NewKubernetesClient(os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT"),
@@ -158,86 +174,173 @@ func main() {
 	signal.Notify(gracefulShutdown, syscall.SIGTERM, syscall.SIGINT)
 	waitGroup := &sync.WaitGroup{}
 
-	// process node pool
-	go func(waitGroup *sync.WaitGroup) {
-		for {
-			log.Info().Msg("Checking node pool to shift...")
 
-			// interval between each process
-			sleepTime := time.Duration(ApplyJitter(*interval)) * time.Second
+	if *disableDummyShift == true {
 
-			nodesFrom, err := kubernetes.GetNodeList(*nodePoolFrom)
+		log.Info().Msg("Default flow INIT.. STARTING NODE FROM/TO Reduction/Increment flow")
 
-			if err != nil {
-				log.Error().
-					Err(err).
-					Str("node-pool", *nodePoolFrom).
-					Msg("Error while getting the list of nodes")
+		/* START of FROM, TO Reduction/Increment flow */
+		go func(waitGroup *sync.WaitGroup) {
+			for {
+				log.Info().Msg("Checking node pool to shift...")
 
-				// mailer.go
-				DispatchMail(*nodePoolFrom + "- Error while getting the list of nodes")
+				// interval between each process
+				sleepTime := time.Duration(ApplyJitter(*interval)) * time.Second
 
-				nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
+				nodesFrom, err := kubernetes.GetNodeList(*nodePoolFrom)
 
-				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
-				time.Sleep(sleepTime)
-				continue
-			}
+				if err != nil {
+					log.Error().
+						Err(err).
+						Str("node-pool", *nodePoolFrom).
+						Msg("Error while getting the list of nodes")
 
-			nodesTo, err := kubernetes.GetNodeList(*nodePoolTo)
+					// mailer.go
+					DispatchMail(*nodePoolFrom + "- Error while getting the list of nodes")
 
-			if err != nil {
-				log.Error().
-					Err(err).
-					Str("node-pool", *nodePoolTo).
-					Msg("Error while getting the list of nodes")
+					nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
 
-				// mailer.go
-				DispatchMail(*nodePoolTo + "- Error while getting the list of nodes")
-
-				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
-
-				nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
-
-				time.Sleep(sleepTime)
-				continue
-			}
-
-			nodePoolFromSize := len(nodesFrom.Items)
-
-			log.Info().
-				Str("node-pool", *nodePoolFrom).
-				Msgf("Node pool has %d node(s), minimun wanted: %d node(s)", nodePoolFromSize, *nodePoolFromMinNode)
-
-			// prometheus status
-			status := "skipped"
-
-			// TODO remove nodePoolFromMinNode, use value from node pool autoscaling setting (min node) instead
-			if nodePoolFromSize > *nodePoolFromMinNode && len(nodesFrom.Items) > 0 {
-				log.Info().
-					Str("node-pool", *nodePoolTo).
-					Msg("Attempting to shift one node...")
-
-				status = "shifted"
-
-				waitGroup.Add(1)
-
-				// Add logic to incre/decr one dummy node pool if that throws error then Mail and in next iteration we can plan next step.
-				if err := shiftNode(gcloudContainerClient, *nodePoolFrom, *nodePoolTo, nodesFrom, nodesTo); err != nil {
-					status = "failed"
+					log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
+					time.Sleep(sleepTime)
+					continue
 				}
-				waitGroup.Done()
 
-				// interval between actions, leverage provider requests when
-				// another operation is already operating on the cluster
-				sleepTime = time.Duration(ApplyJitter(10)) * time.Second
+				nodesTo, err := kubernetes.GetNodeList(*nodePoolTo)
+
+				if err != nil {
+					log.Error().
+						Err(err).
+						Str("node-pool", *nodePoolTo).
+						Msg("Error while getting the list of nodes")
+
+					// mailer.go
+					DispatchMail(*nodePoolTo + "- Error while getting the list of nodes")
+
+					log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
+
+					nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
+
+					time.Sleep(sleepTime)
+					continue
+				}
+
+				nodePoolFromSize := len(nodesFrom.Items)
+
+				log.Info().
+					Str("node-pool", *nodePoolFrom).
+					Msgf("Node pool has %d node(s), minimun wanted: %d node(s)", nodePoolFromSize, *nodePoolFromMinNode)
+
+				// prometheus status
+				status := "skipped"
+
+				// TODO remove nodePoolFromMinNode, use value from node pool autoscaling setting (min node) instead
+				if nodePoolFromSize > *nodePoolFromMinNode && len(nodesFrom.Items) > 0 {
+					log.Info().
+						Str("node-pool", *nodePoolTo).
+						Msg("Attempting to shift one node...")
+
+					status = "shifted"
+
+					waitGroup.Add(1)
+
+					// Add logic to incre/decr one dummy node pool if that throws error then Mail and in next iteration we can plan next step.
+					if err := shiftNode(gcloudContainerClient, *nodePoolFrom, *nodePoolTo, nodesFrom, nodesTo); err != nil {
+						status = "failed"
+					}
+					waitGroup.Done()
+
+					// interval between actions, leverage provider requests when
+					// another operation is already operating on the cluster
+					sleepTime = time.Duration(ApplyJitter(10)) * time.Second
+				}
+
+				nodeTotals.With(prometheus.Labels{"status": status}).Inc()
+				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
+				time.Sleep(sleepTime)
 			}
+		}(waitGroup)
 
-			nodeTotals.With(prometheus.Labels{"status": status}).Inc()
-			log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
-			time.Sleep(sleepTime)
-		}
-	}(waitGroup)
+	}	// END of FROM, TO Reduction/Increment flow
+
+	if *disableDummyShift == false {
+
+		log.Info().Msg("Dummy Shift Enabled.. Single nodePool increment/reduction (0->1->0)")
+
+		// process single dummy node pool reduction (0->1->0)
+		go func(waitGroup *sync.WaitGroup) {
+			for {
+				log.Info().Msg("Checking dummy node pool to shift...")
+
+				// interval between each process
+				sleepTime := time.Duration(ApplyJitter(*interval)) * time.Second
+
+				nodesDummy, err := kubernetes.GetNodeList(*nodePoolDummy)
+
+				if err != nil {
+					log.Error().
+						Err(err).
+						Str("node-pool", *nodePoolDummy).
+						Msg("Error while getting the list of nodes")
+
+					// mailer.go
+					DispatchMail(*nodePoolDummy + "- Error while getting the list of nodes")
+
+					nodeTotals.With(prometheus.Labels{"status": "failed"}).Inc()
+
+					log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
+					time.Sleep(sleepTime)
+					continue
+				}
+
+				nodePoolDummySize := len(nodesDummy.Items)
+
+				log.Info().
+					Str("node-pool", *nodePoolDummy).
+					Msgf("Node pool has %d node(s)", nodePoolDummySize)
+
+				// prometheus status
+				status := "skipped"
+
+				if nodePoolDummySize >= 1 && len(nodesDummy.Items) > 0{
+					log.Info().
+						Str("node-pool", *nodePoolDummy).
+						Msg("Attempting to reduce one node...")
+
+					status = "shifted"
+					waitGroup.Add(1)
+
+					if err := shiftNodePool(gcloudContainerClient, *nodePoolDummy, nodesDummy, int64(nodePoolDummySize - 1)); err != nil {
+						status = "failed"
+					}
+					waitGroup.Done()
+
+				}
+
+				if nodePoolDummySize == 0 {
+					log.Info().
+						Str("node-pool", *nodePoolDummy).
+						Msg("Attempting to add one node...")
+
+					status = "shifted"
+					waitGroup.Add(1)
+
+					if err := shiftNodePool(gcloudContainerClient, *nodePoolDummy, nodesDummy, int64(nodePoolDummySize + 1)); err != nil {
+						status = "failed"
+					}
+					waitGroup.Done()
+
+					// interval between actions, leverage provider requests when
+					// another operation is already operating on the cluster
+					sleepTime = time.Duration(ApplyJitter(60)) * time.Second
+				}
+
+				nodeTotals.With(prometheus.Labels{"status": status}).Inc()
+				log.Info().Msgf("Sleeping for %v seconds...", sleepTime)
+				time.Sleep(sleepTime)
+			}
+		}(waitGroup)
+	// End of dummy shift cycle
+	}
 
 	signalReceived := <-gracefulShutdown
 	log.Info().
@@ -247,6 +350,31 @@ func main() {
 
 	log.Info().Msg("Shutting down...")
 }
+
+
+// shiftNodePool safely try to add a new node then remove later to test Pre-emptible health
+func shiftNodePool(g GCloudContainerClient, dummyName string, dummy *apiv1.NodeList, setSize int64) (err error) {
+
+	log.Info().
+	Str("node-pool", dummyName).
+	Msgf("node resizing, expecting %d node(s)", setSize)
+
+	err = g.SetNodePoolSize(dummyName, setSize)
+
+	if err != nil  {
+		log.Error().
+			Err(err).
+			Str("node-pool", dummyName).
+			Msg("Error resizing node pool")
+
+	// mailer.go
+	DispatchMail(fmt.Sprintf("FATAL %% node-pool:%s . ERROR resizing node pool. Possible PRE-EMPTIBLE resources not available.", dummyName))
+	}
+
+	return
+}
+
+
 
 // shiftNode safely try to add a new node to a pool then remove a node from another
 func shiftNode(g GCloudContainerClient, fromName, toName string, from, to *apiv1.NodeList) (err error) {

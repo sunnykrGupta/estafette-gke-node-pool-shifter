@@ -1,4 +1,8 @@
 estafette-gke-node-pool-shifter
+conf.json.production
+
+*.log
+
 
 # Binaries for programs and plugins
 *.exe
